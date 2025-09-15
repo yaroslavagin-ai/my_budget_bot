@@ -112,30 +112,37 @@ async def save_income(message: types.Message, state: FSMContext):
     await state.set_state(BudgetStates.expenses)
     await message.answer(
         "Какие у тебя обязательные платежи?\n"
-        "Введи в формате: название - сумма\n"
-        "Пример:\nАренда - 25000\nКредит - 10000",
+        "Введи каждый платёж с новой строки в формате: название - сумма\n"
+        "Пример:\nАренда - 25 000\nКредит - 10 000",
         reply_markup=next_keyboard()
     )
 
-# Ввод расходов
+# Ввод расходов с поддержкой нескольких строк и формата 25 000
 @dp.message(BudgetStates.expenses)
 async def save_expenses(message: types.Message, state: FSMContext):
     user_id = message.from_user.id
-    text = message.text.strip()
+    lines = message.text.strip().split("\n")
+    errors = []
 
-    if "-" not in text:
-        await message.answer("Неверный формат. Используй: название - сумма")
-        return
-    try:
-        name, amount = text.split("-", 1)
-        name = name.strip()
-        amount = float(amount.strip().replace(" ", "").replace(",", "."))
-    except:
-        await message.answer("Ошибка. Пример: Аренда - 25000")
-        return
+    for line in lines:
+        if "-" not in line:
+            errors.append(line)
+            continue
+        try:
+            name, amount = line.split("-", 1)
+            name = name.strip()
+            amount = float(amount.strip().replace(" ", "").replace(",", "."))
+            cursor.execute("INSERT INTO expenses (user_id, name, amount) VALUES (?, ?, ?)",
+                           (user_id, name, amount))
+        except:
+            errors.append(line)
 
-    cursor.execute("INSERT INTO expenses (user_id, name, amount) VALUES (?, ?, ?)", (user_id, name, amount))
     conn.commit()
+
+    if errors:
+        await message.answer("Некоторые строки не удалось распознать:\n" + "\n".join(errors) +
+                             "\nИспользуй формат: Название - сумма")
+        return
 
     # Подтверждение
     cursor.execute("SELECT name, amount FROM expenses WHERE user_id = ?", (user_id,))
@@ -149,12 +156,12 @@ async def save_expenses(message: types.Message, state: FSMContext):
     await message.answer(text, reply_markup=confirm_keyboard())
     await state.set_state(BudgetStates.confirm_expenses)
 
+# (Остальная логика без изменений)
 # Подтверждение расходов
 @dp.callback_query(lambda c: c.data in ["confirm_expenses", "edit_expenses", "restart"])
 async def confirm_expenses(callback: types.CallbackQuery, state: FSMContext):
     user_id = callback.from_user.id
     if callback.data == "confirm_expenses":
-        # Переход к расчёту остатка
         cursor.execute("SELECT income FROM users WHERE user_id = ?", (user_id,))
         income = cursor.fetchone()[0]
         cursor.execute("SELECT SUM(amount) FROM expenses WHERE user_id = ?", (user_id,))
@@ -201,7 +208,6 @@ async def choose_method(callback: types.CallbackQuery, state: FSMContext):
     text = f"📊 Твои расходы = {fact_percent}% от дохода\n"
     text += f"Ты выбрал метод {chosen}\n\n"
 
-    # Распределение
     must_pay = round(income * parts[0] / 100)
     wants = round(income * parts[1] / 100)
     savings = round(income * parts[2] / 100)
